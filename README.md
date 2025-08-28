@@ -11,17 +11,17 @@ uv sync
 ### Modules
 
 - Vector DB (Chroma) — create/delete/insert/query a persistent store
-  - See `src/vectordb/README.md`
+  - See [src/vectordb/README.md](src/vectordb/README.md)
 - Gradio RAG Chat — chat UI that retrieves from your collection and answers with OpenAI
-  - See `src/ragchat/README.md`
+  - See [src/ragchat/README.md](src/ragchat/README.md)
 - Textract OCR — batch PDFs through AWS Textract to text
-  - See `src/textract_ocr/README.md`
+  - See [src/textract_ocr/README.md](src/textract_ocr/README.md)
 - LLM Text Processing — run processed text through OpenAI
-  - See `src/textproc/README.md`
+  - See [src/textproc/README.md](src/textproc/README.md)
 - Text Split/Legal Chunk — split/merge and legal-aware chunking helpers
-  - See `src/textsplit/README.md`
+  - See [src/textsplit/README.md](src/textsplit/README.md)
 - DOCX → Text — extract text from .docx
-  - See `src/docx_text/README.md`
+  - See [src/docx_text/README.md](src/docx_text/README.md)
 
 ### Requirements
 
