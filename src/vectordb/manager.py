@@ -84,3 +84,26 @@ def get_collection(db_path: str | os.PathLike[str], name: str) -> Collection:
     client = get_client(db_path)
     return client.get_collection(name=name)
 
+
+def get_collection_with_embedding(
+    db_path: str | os.PathLike[str],
+    name: str,
+    embedding: EmbeddingConfig | None = None,
+) -> Collection:
+    """Get an existing collection and attach an embedding function for queries."""
+    client = get_client(db_path)
+    ef = build_embedding_function(embedding or EmbeddingConfig())
+    return client.get_collection(name=name, embedding_function=ef)
+
+
+def list_collections(db_path: str | os.PathLike[str]) -> list[tuple[str, int]]:
+    client = get_client(db_path)
+    cols = []
+    for c in client.list_collections():
+        try:
+            cnt = int(c.count())  # type: ignore[attr-defined]
+        except Exception:
+            cnt = 0
+        cols.append((c.name, cnt))
+    return sorted(cols, key=lambda x: x[0])
+

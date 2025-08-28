@@ -4,9 +4,10 @@ import argparse
 import sys
 from pathlib import Path
 
-from .manager import create_persistent_db, delete_persistent_db, VDB_MARKER_FILENAME, get_collection
+from .manager import create_persistent_db, delete_persistent_db, VDB_MARKER_FILENAME, get_collection, list_collections
 from .ingest import insert_texts, InsertOptions
 from .embedding import EmbeddingConfig, DEFAULT_OPENAI_EMBEDDING_MODEL
+from .search import query_collection
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -72,6 +73,18 @@ def _build_parser() -> argparse.ArgumentParser:
     p_info.add_argument("collection", help="Collection name")
     p_info.add_argument("--json", action="store_true", help="Output JSON")
 
+    p_ls = sub.add_parser("ls", help="List collections in a DB with counts")
+    p_ls.add_argument("db", help="Path to persistent DB directory")
+    p_ls.add_argument("--json", action="store_true", help="Output JSON")
+
+    p_query = sub.add_parser("query", help="Query a collection and return top-k matches")
+    p_query.add_argument("db", help="Path to persistent DB directory")
+    p_query.add_argument("collection", help="Collection name")
+    p_query.add_argument("text", help="Query text")
+    p_query.add_argument("--top-k", type=int, default=5, help="Number of results to return")
+    p_query.add_argument("--embed-model", default=DEFAULT_OPENAI_EMBEDDING_MODEL, help="Embedding model for queries")
+    p_query.add_argument("--json", action="store_true", help="Output JSON")
+
     return parser
 
 
@@ -136,6 +149,47 @@ def main(argv: list[str] | None = None) -> int:
                 print(int(count))
         else:
             print(int(count))
+        return 0
+
+    if args.command == "ls":
+        try:
+            items = list_collections(args.db)
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if bool(getattr(args, "json", False)):
+            try:
+                import json
+                print(json.dumps([{"collection": name, "count": cnt} for name, cnt in items]))
+            except Exception:
+                for name, cnt in items:
+                    print(f"{name}\t{cnt}")
+        else:
+            for name, cnt in items:
+                print(f"{name}\t{cnt}")
+        return 0
+
+    if args.command == "query":
+        emb = EmbeddingConfig(model=args.embed_model)
+        try:
+            res = query_collection(args.db, args.collection, args.text, top_k=int(args.top_k), embedding=emb)
+        except Exception as exc:
+            print(str(exc), file=sys.stderr)
+            return 2
+        if bool(getattr(args, "json", False)):
+            try:
+                import json
+                print(json.dumps(res, ensure_ascii=False))
+            except Exception:
+                print("[could not dump json]")
+        else:
+            docs = (res.get("documents") or [[]])[0]
+            metas = (res.get("metadatas") or [[]])[0]
+            dists = (res.get("distances") or [[]])[0]
+            for i, (doc, meta, dist) in enumerate(zip(docs, metas, dists), start=1):
+                name = (meta or {}).get("name", "")
+                src = (meta or {}).get("source", "")
+                print(f"[{i}] dist={dist:.4f} {name} | {src}\n{doc[:400]}\n")
         return 0
 
     parser.print_help()

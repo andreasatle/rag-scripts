@@ -94,6 +94,44 @@ uv run vector-db info ./data/vdb my_collection
 # JSON output
 uv run vector-db info ./data/vdb my_collection --json
 ```
+
+List collections in a DB:
+
+```bash
+uv run vector-db ls ./data/vdb
+uv run vector-db ls ./data/vdb --json
+```
+
+Query a collection:
+
+```bash
+export OPENAI_API_KEY=...
+uv run vector-db query ./data/vdb my_collection "what are the key companies?" --top-k 5 --embed-model text-embedding-3-small
+
+# JSON output
+uv run vector-db query ./data/vdb my_collection "what are the key companies?" --json
+```
+
+## Gradio RAG Chat
+
+Launch a simple chatbot that retrieves from your Chroma collection and answers with OpenAI.
+
+```bash
+export OPENAI_API_KEY=...
+
+# Start the app on http://127.0.0.1:7860
+uv run rag-chat ./data/vdb my_collection \
+  --embed-model text-embedding-3-small \
+  --top-k 4 \
+  --model gpt-4o-mini
+
+# Load variables from a .env file
+uv run rag-chat --env ./.env ./data/vdb my_collection
+```
+
+Notes:
+- Uses the same embedding model as the collection for queries (default `text-embedding-3-small`).
+- The chat UI displays answers; you can customize system prompt via `--system`.
 ```
 
 Embedding guidance:
