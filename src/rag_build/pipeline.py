@@ -7,7 +7,8 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
-from textract_ocr.pipeline import find_pdfs, submit_and_collect
+from textract_ocr.pipeline import find_pdfs, submit_and_collect_with_ids
+from textract_ocr.aws import fetch_textract_qc
 from textsplit.cli import split_text_minmax
 from vectordb.embedding import EmbeddingConfig
 from vectordb.manager import get_or_create_collection
@@ -29,6 +30,8 @@ class DocRecord:
     ocr_text_path: Optional[str] = None
     cleaned_text_path: Optional[str] = None
     status: str = "pending"
+    ocr_qc_score: Optional[int] = None
+    ocr_qc_reason: Optional[str] = None
 
 
 @dataclass
@@ -80,6 +83,8 @@ def run_build(
     max_chars: int,
     overlap: int,
     env_file: Optional[Path],
+    qc_min_chars: int,
+    qc_threshold: int,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifests_dir = out_dir / "manifests"
@@ -99,23 +104,71 @@ def run_build(
         docs.append(DocRecord(doc_id=doc_id, source_path=str(p), sha256_bytes=sha256_bytes(p)))
 
     # Submit OCR jobs
-    results = submit_and_collect(
+    results = submit_and_collect_with_ids(
         pdfs, bucket="", key_prefix="", output_dir=ocr_dir, concurrency=jobs, poll_seconds=5.0, timeout_seconds=1800.0, delete_uploaded=False
     )
     # submit_and_collect as used here expects AWS setup; in practice you'll pass bucket via CLI in a future iteration
 
     # Update OCR paths
-    for src, dst in results:
+    job_id_by_src: dict[Path, str] = {}
+    for src, dst, jid in results:
         for d in docs:
             if Path(d.source_path) == src:
                 d.ocr_text_path = str(dst)
                 d.status = "ocr_done"
+                job_id_by_src[src] = jid
 
     write_jsonl(manifests_dir / "docs.jsonl", (asdict(d) for d in docs))
 
-    # 2) Clean (via placeholder) and 3) Non-overlap pre-clean split, then merge
+    # Write a simple QC failed report
+    failed = [d for d in docs if d.status == "qc_failed"]
+    if failed:
+        report_path = out_dir / "qc_failed.txt"
+        lines = [
+            f"QC FAILED ({len(failed)})\n",
+        ]
+        for d in failed:
+            lines.append(
+                f"- {d.doc_id} | {d.source_path} | score={d.ocr_qc_score} | reason={d.ocr_qc_reason}"
+            )
+        report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        print(f"QC report written: {report_path}")
+
+    # 2) QC on OCR text; skip downstream if below threshold
     for d in docs:
         if not d.ocr_text_path:
+            continue
+        raw = Path(d.ocr_text_path).read_text(encoding="utf-8")
+        length = len(raw)
+        non_ascii_ratio = sum(1 for ch in raw if ord(ch) > 127) / max(1, length)
+        digit_ratio = sum(ch.isdigit() for ch in raw) / max(1, length)
+        # Simple heuristic score 0-100
+        score = 100
+        if length < qc_min_chars:
+            score -= 40
+        if non_ascii_ratio > 0.3:
+            score -= int((non_ascii_ratio - 0.3) * 200)
+        if digit_ratio > 0.6:
+            score -= int((digit_ratio - 0.6) * 150)
+        score = max(0, min(100, score))
+        # Combine content heuristics with Textract confidences if available
+        try:
+            jid = job_id_by_src.get(Path(d.source_path))
+            qc = fetch_textract_qc(job_id=jid) if jid else None
+        except Exception:
+            qc = None
+        d.ocr_qc_score = score if not qc else int((score + qc.get("score", score)) / 2)
+        if score < qc_threshold:
+            d.status = "qc_failed"
+            d.ocr_qc_reason = f"len={length}, non_ascii={non_ascii_ratio:.2f}, digits={digit_ratio:.2f}"
+        else:
+            d.status = "qc_ok"
+
+    write_jsonl(manifests_dir / "docs.jsonl", (asdict(d) for d in docs))
+
+    # 3) Clean (via placeholder) and 4) Non-overlap pre-clean split, then merge
+    for d in docs:
+        if not d.ocr_text_path or d.status == "qc_failed":
             continue
         text = Path(d.ocr_text_path).read_text(encoding="utf-8")
         # Pre-clean split to shrink context

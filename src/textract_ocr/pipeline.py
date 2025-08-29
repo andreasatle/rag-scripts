@@ -92,3 +92,56 @@ def _run_single(
     return sub.local, dst
 
 
+def _run_single_with_id(
+    sub: Submission,
+    output_dir: Path,
+    poll_seconds: float,
+    timeout_seconds: float,
+    delete_uploaded: bool,
+) -> Tuple[Path, Path, str]:
+    upload_file_to_s3(sub.local, sub.bucket, sub.key)
+    head_s3_object(sub.bucket, sub.key)
+    job = start_textract_job(sub.bucket, sub.key)
+    poll_textract_job(job.job_id, poll_seconds=poll_seconds, timeout_seconds=timeout_seconds)
+    text = fetch_textract_text(job.job_id)
+    dst = output_dir / (sub.local.stem + ".txt")
+    dst.write_text(text, encoding="utf-8")
+    if delete_uploaded:
+        try:
+            delete_s3_object(sub.bucket, sub.key)
+        except Exception as exc:
+            print(f"Warning: failed to delete s3://{sub.bucket}/{sub.key}: {exc}")
+    return sub.local, dst, job.job_id
+
+
+def submit_and_collect_with_ids(
+    pdfs: List[Path],
+    bucket: str,
+    key_prefix: str,
+    output_dir: Path,
+    concurrency: int = 4,
+    poll_seconds: float = 5.0,
+    timeout_seconds: float = 1800.0,
+    delete_uploaded: bool = False,
+) -> List[Tuple[Path, Path, str]]:
+    """Same as submit_and_collect, but returns (src, dst, job_id)."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    submissions: List[Submission] = []
+    for pdf in pdfs:
+        key = f"{key_prefix.rstrip('/')}/{pdf.name}"
+        submissions.append(Submission(local=pdf, bucket=bucket, key=key))
+
+    with cf.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [
+            executor.submit(_run_single_with_id, s, output_dir, poll_seconds, timeout_seconds, delete_uploaded)
+            for s in submissions
+        ]
+        results: List[Tuple[Path, Path, str]] = []
+        for fut in cf.as_completed(futures):
+            try:
+                results.append(fut.result())
+            except Exception as exc:
+                print(f"Failed job: {exc}")
+        return results
+
+

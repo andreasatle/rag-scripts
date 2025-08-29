@@ -63,6 +63,67 @@ def fetch_textract_text(job_id: str) -> str:
     return "\n".join(lines)
 
 
+def fetch_textract_qc(job_id: str) -> dict:
+    """Compute simple QC metrics from Textract detection results.
+
+    Returns dict with keys: pages, words, lines, avg_conf, low_conf_share,
+    handwriting_share, score (0-100).
+    """
+    client = boto3.client("textract")
+    next_token: Optional[str] = None
+    total_words = 0
+    total_lines = 0
+    total_pages = 0
+    sum_conf_weighted = 0.0
+    char_weight = 0
+    low_conf_words = 0
+    handwriting_lines = 0
+    while True:
+        kwargs = {"JobId": job_id}
+        if next_token:
+            kwargs["NextToken"] = next_token
+        resp = client.get_document_text_detection(**kwargs)
+        blocks = resp.get("Blocks", [])
+        for b in blocks:
+            btype = b.get("BlockType")
+            if btype == "PAGE":
+                total_pages += 1
+            elif btype == "WORD":
+                conf = float(b.get("Confidence") or 0.0)
+                text = b.get("Text") or ""
+                w = max(1, len(text))
+                sum_conf_weighted += conf * w
+                char_weight += w
+                total_words += 1
+                if conf < 80.0:
+                    low_conf_words += 1
+            elif btype == "LINE":
+                total_lines += 1
+                if (b.get("TextType") or "").upper() == "HANDWRITING":
+                    handwriting_lines += 1
+        next_token = resp.get("NextToken")
+        if not next_token:
+            break
+
+    avg_conf = (sum_conf_weighted / char_weight) if char_weight else 0.0
+    low_conf_share = (low_conf_words / total_words) if total_words else 1.0
+    handwriting_share = (handwriting_lines / total_lines) if total_lines else 0.0
+
+    # Simple score as discussed
+    score = 0.7 * (avg_conf / 100.0) + 0.2 * (1.0 - low_conf_share) + 0.1 * (1.0 - handwriting_share)
+    score = max(0, min(100, int(round(score * 100))))
+
+    return {
+        "pages": total_pages,
+        "words": total_words,
+        "lines": total_lines,
+        "avg_conf": round(avg_conf, 2),
+        "low_conf_share": round(low_conf_share, 3),
+        "handwriting_share": round(handwriting_share, 3),
+        "score": score,
+    }
+
+
 def delete_s3_object(bucket: str, key: str) -> None:
     s3 = boto3.client("s3")
     s3.delete_object(Bucket=bucket, Key=key)
