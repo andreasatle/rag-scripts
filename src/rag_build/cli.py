@@ -19,7 +19,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-chars", type=int, default=2500, help="Non-overlap max chars (pre-clean)")
     p.add_argument("--overlap", type=int, default=300, help="Overlap size for final chunks")
     p.add_argument("--env", default=None, help="Path to .env for OPENAI_API_KEY, AWS, etc.")
-    p.add_argument("--s3-bucket", default=None, help="S3 bucket for Textract (created if missing)")
+    p.add_argument("--s3-bucket", default=None, help="S3 bucket for Textract (if omitted, a random bucket will be created)")
     p.add_argument("--s3-prefix", default="textract-inputs", help="S3 key prefix")
     p.add_argument("--aws-region", default=None, help="AWS region (defaults to current session)")
     p.add_argument("--qc-min-chars", type=int, default=200, help="QC: minimum chars for OCR text (default 200)")

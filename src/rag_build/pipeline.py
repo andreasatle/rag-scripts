@@ -9,9 +9,11 @@ from typing import Iterable, List, Optional, Tuple
 
 from textract_ocr.pipeline import find_pdfs, submit_and_collect_with_ids
 from textract_ocr.aws import fetch_textract_qc, ensure_bucket_exists
+import uuid
 from textsplit.cli import split_text_minmax
 from vectordb.embedding import EmbeddingConfig
 from vectordb.manager import get_or_create_collection
+from tqdm import tqdm
 
 
 def sha256_bytes(path: Path) -> str:
@@ -89,6 +91,23 @@ def run_build(
     s3_prefix: str = "textract-inputs",
     aws_region: Optional[str] = None,
 ) -> int:
+    # Load environment: explicit --env if provided, else best-effort ./.env
+    if env_file and env_file.exists():
+        try:
+            from dotenv import load_dotenv  # type: ignore
+            load_dotenv(dotenv_path=env_file, override=False)
+            print(f"Loaded environment from {env_file}")
+        except Exception as e:
+            print(f"Warning: could not load env file {env_file}: {e}")
+    else:
+        default_env = Path(".env")
+        if default_env.exists():
+            try:
+                from dotenv import load_dotenv  # type: ignore
+                load_dotenv(dotenv_path=default_env, override=False)
+                print(f"Loaded environment from {default_env}")
+            except Exception:
+                pass
     out_dir.mkdir(parents=True, exist_ok=True)
     manifests_dir = out_dir / "manifests"
     ocr_dir = out_dir / "ocr_text"
@@ -102,14 +121,15 @@ def run_build(
 
     # Compute sha for doc_id determinism
     docs: List[DocRecord] = []
-    for p in pdfs:
+    for p in tqdm(pdfs, desc="Indexing PDFs"):
         doc_id = p.stem
         docs.append(DocRecord(doc_id=doc_id, source_path=str(p), sha256_bytes=sha256_bytes(p)))
 
     # Submit OCR jobs
     if not s3_bucket:
-        print("Error: --s3-bucket is required for Textract uploads")
-        return 2
+        # Create a random, globally unique bucket name (lowercase, hyphenated)
+        s3_bucket = f"rag-textract-{uuid.uuid4().hex}"
+        print(f"No --s3-bucket provided; creating temporary bucket: {s3_bucket}")
     ensure_bucket_exists(s3_bucket, region=aws_region)
     results = submit_and_collect_with_ids(
         pdfs, bucket=s3_bucket, key_prefix=s3_prefix, output_dir=ocr_dir, concurrency=jobs, poll_seconds=5.0, timeout_seconds=1800.0, delete_uploaded=False
@@ -118,7 +138,7 @@ def run_build(
 
     # Update OCR paths
     job_id_by_src: dict[Path, str] = {}
-    for src, dst, jid in results:
+    for src, dst, jid in tqdm(results, desc="OCR done"):
         for d in docs:
             if Path(d.source_path) == src:
                 d.ocr_text_path = str(dst)
@@ -142,7 +162,7 @@ def run_build(
         print(f"QC report written: {report_path}")
 
     # 2) QC on OCR text; skip downstream if below threshold
-    for d in docs:
+    for d in tqdm(docs, desc="QC"):
         if not d.ocr_text_path:
             continue
         raw = Path(d.ocr_text_path).read_text(encoding="utf-8")
@@ -174,7 +194,7 @@ def run_build(
     write_jsonl(manifests_dir / "docs.jsonl", (asdict(d) for d in docs))
 
     # 3) Clean (via placeholder) and 4) Non-overlap pre-clean split, then merge
-    for d in docs:
+    for d in tqdm(docs, desc="Clean & merge"):
         if not d.ocr_text_path or d.status == "qc_failed":
             continue
         text = Path(d.ocr_text_path).read_text(encoding="utf-8")
@@ -194,7 +214,7 @@ def run_build(
     emb = EmbeddingConfig(model=embed_model)
     coll = get_or_create_collection(db_path, collection, emb)
     chunk_records: List[ChunkRecord] = []
-    for d in docs:
+    for d in tqdm(docs, desc="Chunk & embed"):
         if not d.cleaned_text_path:
             continue
         text = Path(d.cleaned_text_path).read_text(encoding="utf-8")
