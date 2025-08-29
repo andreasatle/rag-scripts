@@ -25,13 +25,14 @@ vector-db = "vectordb.cli:main"
 rag-chat = "ragchat.cli:main"
 word-links = "word_links.cli:main"
 find-duplicates = "dupfinder.cli:main"
+rag-build = "rag_build.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/textract_ocr", "src/textproc", "src/textsplit", "src/docx_text", "src/vectordb", "src/ragchat", "src/word_links", "src/dupfinder"]
+packages = ["src/textract_ocr", "src/textproc", "src/textsplit", "src/docx_text", "src/vectordb", "src/ragchat", "src/word_links", "src/dupfinder", "src/rag_build"]
 
 [project.optional-dependencies]
 clean = [
