@@ -15,6 +15,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--model", default="gpt-4o-mini", help="Chat completion model")
     p.add_argument("--system", default=None, help="System prompt override")
     p.add_argument("--env", default=None, help="Path to .env file to load (OPENAI_API_KEY, etc.)")
+    p.add_argument("--history-keep-turns", type=int, default=8, help="Max prior user/assistant turns to include")
+    p.add_argument("--history-summarize", action="store_true", help="Summarize older history into a brief system message")
+    p.add_argument("--history-summary-max-chars", type=int, default=800, help="Max characters for the summary message")
     return p
 
 
@@ -49,6 +52,9 @@ def main(argv: list[str] | None = None) -> int:
         top_k=int(args.top_k),
         model=args.model,
         system_prompt=args.system or "You are a helpful assistant. Use the provided context excerpts to answer. If unsure, say you don't know.",
+        history_max_messages=int(args.history_keep_turns),
+        history_summarize=bool(args.history_summarize),
+        history_summary_max_chars=int(args.history_summary_max_chars),
     )
     launch_app(cfg)
     return 0

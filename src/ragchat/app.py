@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Tuple, Dict, Any
+import re
 
 import gradio as gr
 
@@ -19,6 +20,9 @@ class RAGConfig:
     top_k: int = 4
     system_prompt: str = "You are a helpful assistant. Use the provided context excerpts to answer. If unsure, say you don't know."
     model: str = "gpt-4o-mini"
+    history_max_messages: int = 8
+    history_summarize: bool = False
+    history_summary_max_chars: int = 800
 
 
 def _load_openai_client():
@@ -64,9 +68,45 @@ def build_chain(config: RAGConfig):
             context_lines.append(f"[{i}] {name} | {src}\n{doc}")
         context = "\n\n".join(context_lines) if context_lines else ""
 
-        messages = []
+        messages: List[Dict[str, Any]] = []
         if config.system_prompt:
             messages.append({"role": "system", "content": config.system_prompt})
+        # Include prior conversation (excluding the latest user message), limited window
+        prior_history: List[Dict[str, Any]] = []
+        if history:
+            if isinstance(history[-1], dict) and history[-1].get("role") == "user":
+                prior_history = history[:-1]
+            else:
+                prior_history = history
+        if prior_history:
+            # Split into older (to summarize) and recent (verbatim)
+            recent = prior_history[-config.history_max_messages :]
+            older = prior_history[:-config.history_max_messages]
+
+            if config.history_summarize and older:
+                # naive compression: join with labels and trim
+                parts: List[str] = []
+                for m in older:
+                    if not isinstance(m, dict):
+                        continue
+                    r = m.get("role")
+                    c = m.get("content")
+                    if r in ("user", "assistant") and isinstance(c, str) and c.strip():
+                        parts.append(f"{r}: {c.strip()}")
+                summary_text = ("\n".join(parts))[: max(0, config.history_summary_max_chars)]
+                if summary_text:
+                    messages.append({
+                        "role": "system",
+                        "content": f"Conversation summary (earlier turns):\n{summary_text}",
+                    })
+
+            for m in recent:
+                if not isinstance(m, dict):
+                    continue
+                role = m.get("role")
+                content = m.get("content")
+                if role in ("user", "assistant") and isinstance(content, str) and content.strip():
+                    messages.append({"role": role, "content": content})
         if context_lines:
             print(f"[rag-chat] Using {len(context_lines)} context chunks")
             for i, (doc, meta) in enumerate(zip(docs, metas), start=1):
@@ -86,7 +126,6 @@ def build_chain(config: RAGConfig):
             messages.append({"role": "user", "content": f"Question: {query}"})
         else:
             messages.append({"role": "user", "content": query})
-        print(f"messages: {messages}")
         try:
             completion = openai_client.chat.completions.create(
                 model=config.model,
@@ -94,10 +133,42 @@ def build_chain(config: RAGConfig):
                 temperature=0.2,
             )
             answer = completion.choices[0].message.content or ""
-            return answer if isinstance(answer, str) and answer.strip() else "No answer generated."
+
+            # Build sources text separately (do not append to answer)
+            sources_text = ""
+            if context_lines:
+                def _clean_display(name: str, src: str) -> str:
+                    display = name or Path(src).name
+                    base = Path(display).stem if display else display
+                    # remove only '_split_<n>_of_<m>' suffixes
+                    base = re.sub(r"_split_\d+_of_\d+$", "", base)
+                    return base or (Path(src).stem if src else display)
+
+                # Map each label to the list of context indices that contributed
+                label_to_indices: Dict[str, List[int]] = {}
+                order: List[str] = []
+                for idx, meta in enumerate(metas, start=1):
+                    nm = (meta or {}).get("name", "")
+                    sp = (meta or {}).get("source", "")
+                    label = _clean_display(nm, sp)
+                    if label not in label_to_indices:
+                        order.append(label)
+                        label_to_indices[label] = []
+                    label_to_indices[label].append(idx)
+
+                lines: List[str] = []
+                for label in order:
+                    idxs = label_to_indices.get(label, [])
+                    idx_str = ", ".join(str(i) for i in idxs) if idxs else ""
+                    suffix = f" ({len(idxs)} chunks)" if len(idxs) > 1 else ""
+                    lines.append(f"- [{idx_str}] {label}{suffix}")
+                sources_text = "\n".join(lines)
+
+            final_answer = answer if isinstance(answer, str) and answer.strip() else "No answer generated."
+            return final_answer, sources_text
         except Exception as exc:
             print(f"[rag-chat] OpenAI error: {exc}")
-            return f"Error: {exc}"
+            return f"Error: {exc}", ""
 
     return chat_fn
 
@@ -107,8 +178,12 @@ def launch_app(config: RAGConfig):
     with gr.Blocks() as demo:
         gr.Markdown(f"# RAG Chat — Collection: {config.collection}")
         chatbot = gr.Chatbot(type="messages", height=500)
-        msg = gr.Textbox(placeholder="Ask a question...")
-        clear = gr.Button("Clear")
+        with gr.Row():
+            msg = gr.Textbox(placeholder="Ask a question...", scale=8)
+            show_sources = gr.Button("Sources", scale=1)
+            clear = gr.Button("Clear", scale=1)
+        sources_state = gr.State("")
+        sources_md = gr.Markdown(visible=False)
 
         def user_submit(user_message, chat_history):
             if not user_message:
@@ -121,14 +196,17 @@ def launch_app(config: RAGConfig):
                 if isinstance(m, dict) and m.get("role") == "user":
                     user_message = str(m.get("content", ""))
                     break
-            answer = chat_fn(user_message, chat_history)
+            answer, srcs = chat_fn(user_message, chat_history)
             chat_history.append({"role": "assistant", "content": answer})
-            return chat_history
+            return chat_history, (srcs or "_No sources for this answer._")
 
         msg.submit(user_submit, [msg, chatbot], [msg, chatbot]).then(
-            bot_respond, chatbot, chatbot
+            bot_respond, chatbot, [chatbot, sources_state]
         )
-        clear.click(lambda: [], None, chatbot, queue=False)
+        show_sources.click(
+            lambda s: gr.update(value=s, visible=True), inputs=sources_state, outputs=sources_md
+        )
+        clear.click(lambda: ([], gr.update(value="", visible=False), ""), None, [chatbot, sources_md, sources_state], queue=False)
 
     demo.launch()
 
