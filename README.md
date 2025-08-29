@@ -22,6 +22,10 @@ uv sync
   - See [src/textsplit/README.md](src/textsplit/README.md)
 - DOCX → Text — extract text from .docx
   - See [src/docx_text/README.md](src/docx_text/README.md)
+ - Word Links Downloader — extract/download links from .docx
+  - See [src/word_links/README.md](src/word_links/README.md)
+ - Duplicate Finder — group duplicate files by content hash
+  - See [src/dupfinder/README.md](src/dupfinder/README.md)
 
 ### Requirements
 
@@ -39,3 +43,5 @@ Registered console scripts (see per-module docs for details):
 - `llm-process-text` — LLM processing
 - `split-text-files`, `merge-split-files`, `legal-chunk-text` — splitting utilities
 - `docx-to-text` — DOCX extraction
+ - `word-links` — extract/download hyperlinks in .docx
+ - `find-duplicates` — report duplicate files by hash
