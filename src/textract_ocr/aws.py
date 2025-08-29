@@ -142,3 +142,17 @@ def get_bucket_region(bucket: str) -> Optional[str]:
     return loc or "us-east-1"
 
 
+# Convenience: ensure bucket exists (optionally create)
+def ensure_bucket_exists(bucket: str, region: Optional[str] = None) -> None:
+    s3 = boto3.client("s3")
+    try:
+        s3.head_bucket(Bucket=bucket)
+        return
+    except Exception:
+        pass
+    # Create when missing
+    if region and region != "us-east-1":
+        s3.create_bucket(Bucket=bucket, CreateBucketConfiguration={"LocationConstraint": region})
+    else:
+        s3.create_bucket(Bucket=bucket)
+

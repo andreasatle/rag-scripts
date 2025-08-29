@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 from textract_ocr.pipeline import find_pdfs, submit_and_collect_with_ids
-from textract_ocr.aws import fetch_textract_qc
+from textract_ocr.aws import fetch_textract_qc, ensure_bucket_exists
 from textsplit.cli import split_text_minmax
 from vectordb.embedding import EmbeddingConfig
 from vectordb.manager import get_or_create_collection
@@ -85,6 +85,9 @@ def run_build(
     env_file: Optional[Path],
     qc_min_chars: int,
     qc_threshold: int,
+    s3_bucket: Optional[str] = None,
+    s3_prefix: str = "textract-inputs",
+    aws_region: Optional[str] = None,
 ) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     manifests_dir = out_dir / "manifests"
@@ -104,8 +107,12 @@ def run_build(
         docs.append(DocRecord(doc_id=doc_id, source_path=str(p), sha256_bytes=sha256_bytes(p)))
 
     # Submit OCR jobs
+    if not s3_bucket:
+        print("Error: --s3-bucket is required for Textract uploads")
+        return 2
+    ensure_bucket_exists(s3_bucket, region=aws_region)
     results = submit_and_collect_with_ids(
-        pdfs, bucket="", key_prefix="", output_dir=ocr_dir, concurrency=jobs, poll_seconds=5.0, timeout_seconds=1800.0, delete_uploaded=False
+        pdfs, bucket=s3_bucket, key_prefix=s3_prefix, output_dir=ocr_dir, concurrency=jobs, poll_seconds=5.0, timeout_seconds=1800.0, delete_uploaded=False
     )
     # submit_and_collect as used here expects AWS setup; in practice you'll pass bucket via CLI in a future iteration
 

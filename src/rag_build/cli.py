@@ -19,6 +19,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-chars", type=int, default=2500, help="Non-overlap max chars (pre-clean)")
     p.add_argument("--overlap", type=int, default=300, help="Overlap size for final chunks")
     p.add_argument("--env", default=None, help="Path to .env for OPENAI_API_KEY, AWS, etc.")
+    p.add_argument("--s3-bucket", default=None, help="S3 bucket for Textract (created if missing)")
+    p.add_argument("--s3-prefix", default="textract-inputs", help="S3 key prefix")
+    p.add_argument("--aws-region", default=None, help="AWS region (defaults to current session)")
     p.add_argument("--qc-min-chars", type=int, default=200, help="QC: minimum chars for OCR text (default 200)")
     p.add_argument("--qc-threshold", type=int, default=50, help="QC: minimum score to proceed (0-100, default 50)")
     p.add_argument("--out", default="build", help="Build output directory (manifests, text)")
@@ -33,6 +36,7 @@ def main(argv: List[str] | None = None) -> int:
         embed_model=args.embed_model, jobs=args.jobs, min_chars=args.min_chars, max_chars=args.max_chars,
         overlap=args.overlap, env_file=Path(args.env) if args.env else None,
         qc_min_chars=int(args.qc_min_chars), qc_threshold=int(args.qc_threshold),
+        s3_bucket=args.s3_bucket, s3_prefix=args.s3_prefix, aws_region=args.aws_region,
     )
 
 
