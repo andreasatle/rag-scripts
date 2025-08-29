@@ -23,13 +23,15 @@ docx-to-text = "docx_text.cli:main"
 legal-chunk-text = "textsplit.legal_cli:main"
 vector-db = "vectordb.cli:main"
 rag-chat = "ragchat.cli:main"
+word-links = "word_links.cli:main"
+find-duplicates = "dupfinder.cli:main"
 
 [build-system]
 requires = ["hatchling>=1.25.0"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/textract_ocr", "src/textproc", "src/textsplit", "src/docx_text", "src/vectordb", "src/ragchat"]
+packages = ["src/textract_ocr", "src/textproc", "src/textsplit", "src/docx_text", "src/vectordb", "src/ragchat", "src/word_links", "src/dupfinder"]
 
 [project.optional-dependencies]
 clean = [
