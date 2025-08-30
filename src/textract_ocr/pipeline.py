@@ -145,3 +145,32 @@ def submit_and_collect_with_ids(
         return results
 
 
+def submit_and_stream_with_ids(
+    pdfs: List[Path],
+    bucket: str,
+    key_prefix: str,
+    output_dir: Path,
+    concurrency: int = 4,
+    poll_seconds: float = 5.0,
+    timeout_seconds: float = 1800.0,
+    delete_uploaded: bool = False,
+):
+    """Yield (src, dst, job_id) as each Textract job finishes."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    submissions: List[Submission] = []
+    for pdf in pdfs:
+        key = f"{key_prefix.rstrip('/')}/{pdf.name}"
+        submissions.append(Submission(local=pdf, bucket=bucket, key=key))
+
+    with cf.ThreadPoolExecutor(max_workers=concurrency) as executor:
+        futures = [
+            executor.submit(_run_single_with_id, s, output_dir, poll_seconds, timeout_seconds, delete_uploaded)
+            for s in submissions
+        ]
+        for fut in cf.as_completed(futures):
+            try:
+                yield fut.result()
+            except Exception as exc:
+                print(f"Failed job: {exc}")
+
+

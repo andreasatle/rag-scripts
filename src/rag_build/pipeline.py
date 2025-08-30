@@ -7,13 +7,14 @@ from dataclasses import dataclass, asdict
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
-from textract_ocr.pipeline import find_pdfs, submit_and_collect_with_ids
+from textract_ocr.pipeline import find_pdfs, submit_and_stream_with_ids
 from textract_ocr.aws import fetch_textract_qc, ensure_bucket_exists, delete_bucket_recursive
 import uuid
 from textsplit.cli import split_text_minmax
 from vectordb.embedding import EmbeddingConfig
 from vectordb.manager import get_or_create_collection
 from tqdm import tqdm
+import boto3
 
 
 def sha256_bytes(path: Path) -> str:
@@ -130,34 +131,90 @@ def run_build(
         # Create a random, globally unique bucket name (lowercase, hyphenated)
         s3_bucket = f"rag-textract-{uuid.uuid4().hex}"
         print(f"No --s3-bucket provided; creating temporary bucket: {s3_bucket}")
+    # Ensure boto3 session region matches desired region
+    if aws_region:
+        try:
+            boto3.setup_default_session(region_name=aws_region)
+        except Exception:
+            pass
     ensure_bucket_exists(s3_bucket, region=aws_region)
-    results = submit_and_collect_with_ids(
-        pdfs, bucket=s3_bucket, key_prefix=s3_prefix, output_dir=ocr_dir, concurrency=jobs, poll_seconds=5.0, timeout_seconds=1800.0, delete_uploaded=False
-    )
-    # submit_and_collect as used here expects AWS setup; in practice you'll pass bucket via CLI in a future iteration
-
-    # Update OCR paths
+    # Stream per-doc pipeline
     job_id_by_src: dict[Path, str] = {}
-    for src, dst, jid in tqdm(results, desc="OCR done"):
-        for d in docs:
-            if Path(d.source_path) == src:
-                d.ocr_text_path = str(dst)
-                d.status = "ocr_done"
-                job_id_by_src[src] = jid
+    qc_failed_accum: List[DocRecord] = []
+    for src, dst, jid in tqdm(submit_and_stream_with_ids(
+        pdfs, bucket=s3_bucket, key_prefix=s3_prefix, output_dir=ocr_dir, concurrency=jobs, poll_seconds=5.0, timeout_seconds=1800.0, delete_uploaded=False
+    ), desc="OCR streaming"):
+        # Record OCR
+        rec = next((d for d in docs if Path(d.source_path) == src), None)
+        if not rec:
+            continue
+        rec.ocr_text_path = str(dst)
+        rec.status = "ocr_done"
+        job_id_by_src[src] = jid
 
-    write_jsonl(manifests_dir / "docs.jsonl", (asdict(d) for d in docs))
+        # QC this doc
+        raw = Path(rec.ocr_text_path).read_text(encoding="utf-8")
+        length = len(raw)
+        non_ascii_ratio = sum(1 for ch in raw if ord(ch) > 127) / max(1, length)
+        digit_ratio = sum(ch.isdigit() for ch in raw) / max(1, length)
+        score = 100
+        if length < qc_min_chars:
+            score -= 40
+        if non_ascii_ratio > 0.3:
+            score -= int((non_ascii_ratio - 0.3) * 200)
+        if digit_ratio > 0.6:
+            score -= int((digit_ratio - 0.6) * 150)
+        score = max(0, min(100, score))
+        try:
+            qc = fetch_textract_qc(job_id=jid)
+        except Exception:
+            qc = None
+        rec.ocr_qc_score = score if not qc else int((score + qc.get("score", score)) / 2)
+        if rec.ocr_qc_score < qc_threshold:
+            rec.status = "qc_failed"
+            rec.ocr_qc_reason = f"len={length}, non_ascii={non_ascii_ratio:.2f}, digits={digit_ratio:.2f}"
+            qc_failed_accum.append(rec)
+            write_jsonl(manifests_dir / "docs.jsonl", [asdict(rec)])
+            continue
+        else:
+            rec.status = "qc_ok"
+            write_jsonl(manifests_dir / "docs.jsonl", [asdict(rec)])
 
-    # Write a simple QC failed report
-    failed = [d for d in docs if d.status == "qc_failed"]
-    if failed:
+        # Clean & merge
+        parts = split_text_minmax(raw, min_chars=min_chars, max_chars=max_chars)
+        cleaned_parts = [clean_text(t) for t in parts]
+        merged = "\n\n".join(cleaned_parts)
+        dst_clean = clean_dir / (rec.doc_id + ".txt")
+        dst_clean.parent.mkdir(parents=True, exist_ok=True)
+        dst_clean.write_text(merged, encoding="utf-8")
+        rec.cleaned_text_path = str(dst_clean)
+        rec.status = "clean_done"
+        write_jsonl(manifests_dir / "docs.jsonl", [asdict(rec)])
+
+        # Chunk & embed
+        emb = EmbeddingConfig(model=embed_model)
+        coll = get_or_create_collection(db_path, collection, emb)
+        spans = chunk_overlap(merged, max_chars=max_chars, overlap=overlap)
+        if spans:
+            documents: List[str] = []
+            metadatas: List[dict] = []
+            ids: List[str] = []
+            chunk_records: List[ChunkRecord] = []
+            for idx, (s, e, t) in enumerate(spans, start=1):
+                cid = f"{rec.doc_id}:{idx}"
+                documents.append(t)
+                metadatas.append({"doc_id": rec.doc_id, "source": rec.source_path, "chunk_index": idx, "start_char": s, "end_char": e})
+                ids.append(cid)
+                chunk_records.append(ChunkRecord(chunk_id=cid, doc_id=rec.doc_id, start_char=s, end_char=e, overlap=overlap, embed_model=embed_model, inserted=True))
+            coll.add(documents=documents, metadatas=metadatas, ids=ids)
+            write_jsonl(manifests_dir / "chunks.jsonl", (asdict(c) for c in chunk_records))
+
+    # After stream, write QC report if any
+    if qc_failed_accum:
         report_path = out_dir / "qc_failed.txt"
-        lines = [
-            f"QC FAILED ({len(failed)})\n",
-        ]
-        for d in failed:
-            lines.append(
-                f"- {d.doc_id} | {d.source_path} | score={d.ocr_qc_score} | reason={d.ocr_qc_reason}"
-            )
+        lines = [f"QC FAILED ({len(qc_failed_accum)})\n"]
+        for d in qc_failed_accum:
+            lines.append(f"- {d.doc_id} | {d.source_path} | score={d.ocr_qc_score} | reason={d.ocr_qc_reason}")
         report_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
         print(f"QC report written: {report_path}")
 
