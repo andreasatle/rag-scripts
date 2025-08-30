@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable, List, Optional, Tuple
 
 from textract_ocr.pipeline import find_pdfs, submit_and_collect_with_ids
-from textract_ocr.aws import fetch_textract_qc, ensure_bucket_exists
+from textract_ocr.aws import fetch_textract_qc, ensure_bucket_exists, delete_bucket_recursive
 import uuid
 from textsplit.cli import split_text_minmax
 from vectordb.embedding import EmbeddingConfig
@@ -233,6 +233,15 @@ def run_build(
         coll.add(documents=documents, metadatas=metadatas, ids=ids)
 
     write_jsonl(manifests_dir / "chunks.jsonl", (asdict(c) for c in chunk_records))
+
+    # Cleanup temporary bucket if we created it
+    if s3_bucket and s3_bucket.startswith("rag-textract-"):
+        try:
+            print(f"Cleaning up temporary bucket: {s3_bucket}")
+            delete_bucket_recursive(s3_bucket)
+        except Exception as e:
+            print(f"Warning: failed to delete bucket {s3_bucket}: {e}")
+
     print(f"Build complete. Docs: {len(docs)}, Chunks: {len(chunk_records)}")
     return 0
 

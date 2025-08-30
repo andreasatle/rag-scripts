@@ -156,3 +156,21 @@ def ensure_bucket_exists(bucket: str, region: Optional[str] = None) -> None:
     else:
         s3.create_bucket(Bucket=bucket)
 
+
+def delete_bucket_recursive(bucket: str) -> None:
+    """Delete all objects (and object versions) in a bucket, then delete the bucket."""
+    s3r = boto3.resource("s3")
+    b = s3r.Bucket(bucket)
+    try:
+        # Delete versions if versioning enabled
+        b.object_versions.delete()
+    except Exception:
+        # Fallback: delete plain objects
+        try:
+            b.objects.delete()
+        except Exception:
+            pass
+    # Attempt bucket delete
+    s3 = boto3.client("s3")
+    s3.delete_bucket(Bucket=bucket)
+
